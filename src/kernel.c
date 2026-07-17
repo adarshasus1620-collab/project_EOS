@@ -52,4 +52,13 @@ void init_gdt() {
 
 void main() {
     init_gdt();
+
+    // Infinite loop - kernel should never return
+    while (1) {
+        
+    }
+}
+
+void _start() {
+    main();
 }
