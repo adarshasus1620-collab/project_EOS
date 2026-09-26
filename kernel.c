@@ -35,6 +35,8 @@ struct idt_ptr {
 struct idt_entry idt[256];
 struct idt_ptr idt_ptr_val;
 
+volatile uint32_t timer_ticks = 0;
+
 void init_gdt() {
     gdt[0].limit_low = 0;
     gdt[0].base_low = 0;
@@ -69,6 +71,41 @@ void set_idt_entry(int n, uint32_t handler) {
     idt[n].offset_high = (handler >> 16) & 0xFFFF;
 }
 
+static inline void outb(uint16_t port, uint8_t val) {
+    __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
+}
+
+void init_pic() {
+    outb(0x20, 0x11);
+    outb(0xA0, 0x11);
+    outb(0x21, 0x20);
+    outb(0xA1, 0x28);
+    outb(0x21, 0x04);
+    outb(0xA1, 0x02);
+    outb(0x21, 0x01);
+    outb(0xA1, 0x01);
+    outb(0x21, 0xFE);  // Unmask only IRQ0 (timer), mask rest
+    outb(0xA1, 0xFF);
+}
+
+// Timer interrupt handler
+void timer_handler() {
+    timer_ticks++;
+
+    // Send End-Of-Interrupt signal to PIC
+    outb(0x20, 0x20);
+}
+
+// Assembly stub that calls our C handler
+__attribute__((naked)) void timer_interrupt_stub() {
+    __asm__ volatile (
+        "pusha\n"
+        "call timer_handler\n"
+        "popa\n"
+        "iret\n"
+    );
+}
+
 void init_idt() {
     idt_ptr_val.limit = sizeof(idt) - 1;
     idt_ptr_val.base = (uint32_t)&idt;
@@ -77,41 +114,18 @@ void init_idt() {
         set_idt_entry(i, 0);
     }
 
+    // IRQ0 (timer) is now at interrupt number 32
+    set_idt_entry(32, (uint32_t)timer_interrupt_stub);
+
     __asm__ volatile ("lidt (%0)" : : "r" (&idt_ptr_val));
-}
-
-// Helper functions to talk to hardware ports
-static inline void outb(uint16_t port, uint8_t val) {
-    __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
-}
-
-// PIC remapping
-void init_pic() {
-    // Start initialization sequence
-    outb(0x20, 0x11);
-    outb(0xA0, 0x11);
-
-    // Set new interrupt offsets
-    outb(0x21, 0x20);  // Master PIC starts at 32
-    outb(0xA1, 0x28);  // Slave PIC starts at 40
-
-    // Tell master/slave about each other
-    outb(0x21, 0x04);
-    outb(0xA1, 0x02);
-
-    // Set mode
-    outb(0x21, 0x01);
-    outb(0xA1, 0x01);
-
-    // Mask all interrupts for now
-    outb(0x21, 0xFF);
-    outb(0xA1, 0xFF);
 }
 
 void main() {
     init_gdt();
     init_idt();
     init_pic();
+
+    __asm__ volatile ("sti");  // Enable interrupts
 
     while (1) {
         
