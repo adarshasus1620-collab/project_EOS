@@ -108,12 +108,23 @@ __attribute__((naked)) void timer_interrupt_stub() {
     );
 }
 
+// Default handler for any interrupt we don't specifically handle
+__attribute__((naked)) void default_interrupt_stub() {
+    __asm__ volatile (
+        "pusha\n"
+        "movb $0x20, %al\n"
+        "outb %al, $0x20\n"
+        "popa\n"
+        "iret\n"
+    );
+}
+
 void init_idt() {
     idt_ptr_val.limit = sizeof(idt) - 1;
     idt_ptr_val.base = (uint32_t)&idt;
 
     for (int i = 0; i < 256; i++) {
-        set_idt_entry(i, 0);
+        set_idt_entry(i, (uint32_t)default_interrupt_stub);
     }
 
     set_idt_entry(32, (uint32_t)timer_interrupt_stub);
@@ -126,7 +137,7 @@ void main() {
     init_idt();
     init_pic();
 
-    //__asm__ volatile ("sti");  // Temporarily disabled for debugging
+    __asm__ volatile ("sti");  // Enable interrupts
 
     while (1) {
         
