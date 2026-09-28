@@ -43,6 +43,65 @@ struct idt_ptr idt_ptr_val;
 
 volatile uint32_t timer_ticks = 0;
 
+// VGA text mode screen (80 columns x 25 rows)
+volatile uint16_t *vga_buffer = (volatile uint16_t *)0xB8000;
+int cursor_x = 0;
+int cursor_y = 0;
+
+void clear_screen() {
+    for (int i = 0; i < 80 * 25; i++) {
+        vga_buffer[i] = (uint16_t)(0x0F00 | ' ');
+    }
+    cursor_x = 0;
+    cursor_y = 0;
+}
+
+void set_cursor(int x, int y) {
+    cursor_x = x;
+    cursor_y = y;
+}
+
+void print_char(char c) {
+    if (c == '\n') {
+        cursor_x = 0;
+        cursor_y++;
+        return;
+    }
+    vga_buffer[cursor_y * 80 + cursor_x] = (uint16_t)(0x0F00 | (uint8_t)c);
+    cursor_x++;
+    if (cursor_x >= 80) {
+        cursor_x = 0;
+        cursor_y++;
+    }
+}
+
+void print_string(const char *str) {
+    for (int i = 0; str[i] != '\0'; i++) {
+        print_char(str[i]);
+    }
+}
+
+void print_number(uint32_t num) {
+    char buffer[11];
+    int i = 0;
+
+    if (num == 0) {
+        print_char('0');
+        return;
+    }
+
+    while (num > 0) {
+        buffer[i] = (char)('0' + (num % 10));
+        num = num / 10;
+        i++;
+    }
+
+    while (i > 0) {
+        i--;
+        print_char(buffer[i]);
+    }
+}
+
 void init_gdt() {
     gdt[0].limit_low = 0;
     gdt[0].base_low = 0;
@@ -133,13 +192,25 @@ void init_idt() {
 }
 
 void main() {
+    clear_screen();
+    print_string("EOS kernel running in 32-bit protected mode\n");
+
     init_gdt();
     init_idt();
     init_pic();
 
-    __asm__ volatile ("sti");  // Enable interrupts
+    __asm__ volatile ("sti");
+
+    uint32_t last_ticks = 0xFFFFFFFF;
 
     while (1) {
-        
+        uint32_t now = timer_ticks;
+        if (now != last_ticks) {
+            last_ticks = now;
+            set_cursor(0, 2);
+            print_string("Timer ticks: ");
+            print_number(now);
+            print_string("  ");
+        }
     }
 }
