@@ -67,6 +67,18 @@ void print_char(char c) {
         cursor_y++;
         return;
     }
+
+    if (c == '\b') {
+        if (cursor_x > 0) {
+            cursor_x--;
+        } else if (cursor_y > 0) {
+            cursor_y--;
+            cursor_x = 79;
+        }
+        vga_buffer[cursor_y * 80 + cursor_x] = (uint16_t)(0x0F00 | ' ');
+        return;
+    }
+
     vga_buffer[cursor_y * 80 + cursor_x] = (uint16_t)(0x0F00 | (uint8_t)c);
     cursor_x++;
     if (cursor_x >= 80) {
@@ -155,7 +167,7 @@ void init_pic() {
     outb(0xA1, 0x02);
     outb(0x21, 0x01);
     outb(0xA1, 0x01);
-    outb(0x21, 0xFC);  // Unmask IRQ0 (timer) and IRQ1 (keyboard)
+    outb(0x21, 0xFC);
     outb(0xA1, 0xFF);
 }
 
@@ -185,7 +197,6 @@ const char scancode_to_ascii[128] = {
 void keyboard_handler() {
     uint8_t scancode = inb(0x60);
 
-    // Only handle key-press (bit 7 = 0), ignore key-release
     if (!(scancode & 0x80)) {
         char c = scancode_to_ascii[scancode];
         if (c != 0) {
