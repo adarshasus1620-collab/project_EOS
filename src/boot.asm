@@ -5,12 +5,11 @@ start:
     mov si, msg
     call print_string
 
-    mov ah, 0x02
-    mov al, 5
-    mov ch, 0
-    mov cl, 2
-    mov dh, 0
-    mov bx, 0x8000
+    mov [boot_drive], dl
+
+    mov si, dap
+    mov ah, 0x42
+    mov dl, [boot_drive]
     int 0x13
 
     jc disk_error
@@ -41,6 +40,16 @@ return:
 
 msg: db "Hello EOS", 0
 err_msg: db "Disk Error", 0
+boot_drive: db 0
+
+; Disk Address Packet (for LBA read)
+dap:
+    db 0x10       ; size of packet
+    db 0x00       ; reserved
+    dw 10         ; number of sectors to read
+    dw 0x8000     ; offset to load into
+    dw 0x0000     ; segment to load into
+    dq 1          ; starting LBA sector (sector 1, since sector 0 is bootloader)
 
 gdt_start:
 
