@@ -114,6 +114,17 @@ void print_number(uint32_t num) {
     }
 }
 
+int str_equals(const char *a, const char *b) {
+    int i = 0;
+    while (a[i] != '\0' && b[i] != '\0') {
+        if (a[i] != b[i]) {
+            return 0;
+        }
+        i++;
+    }
+    return a[i] == '\0' && b[i] == '\0';
+}
+
 void init_gdt() {
     gdt[0].limit_low = 0;
     gdt[0].base_low = 0;
@@ -204,6 +215,35 @@ const char scancode_to_ascii_shift[128] = {
 
 volatile int shift_pressed = 0;
 
+// Command buffer for the shell
+char command_buffer[128];
+int command_length = 0;
+
+void run_command() {
+    command_buffer[command_length] = '\0';
+
+    if (command_length == 0) {
+        return;
+    }
+
+    if (str_equals(command_buffer, "help")) {
+        print_string("Available commands:\n");
+        print_string("  help  - show this list\n");
+        print_string("  clear - clear the screen\n");
+        print_string("  ticks - show timer tick count\n");
+    } else if (str_equals(command_buffer, "clear")) {
+        clear_screen();
+    } else if (str_equals(command_buffer, "ticks")) {
+        print_string("Timer ticks: ");
+        print_number(timer_ticks);
+        print_char('\n');
+    } else {
+        print_string("Unknown command: ");
+        print_string(command_buffer);
+        print_char('\n');
+    }
+}
+
 void keyboard_handler() {
     uint8_t scancode = inb(0x60);
 
@@ -213,7 +253,20 @@ void keyboard_handler() {
         shift_pressed = 0;
     } else if (!(scancode & 0x80)) {
         char c = shift_pressed ? scancode_to_ascii_shift[scancode] : scancode_to_ascii[scancode];
-        if (c != 0) {
+
+        if (c == '\n') {
+            print_char('\n');
+            run_command();
+            command_length = 0;
+            print_string("> ");
+        } else if (c == '\b') {
+            if (command_length > 0) {
+                command_length--;
+                print_char('\b');
+            }
+        } else if (c != 0 && command_length < 127) {
+            command_buffer[command_length] = c;
+            command_length++;
             print_char(c);
         }
     }
@@ -258,7 +311,8 @@ void init_idt() {
 void main() {
     clear_screen();
     print_string("EOS kernel running in 32-bit protected mode\n");
-    print_string("Type something:\n");
+    print_string("Type 'help' for a list of commands\n");
+    print_string("> ");
 
     init_gdt();
     init_idt();
