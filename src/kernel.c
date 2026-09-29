@@ -140,6 +140,12 @@ static inline void outb(uint16_t port, uint8_t val) {
     __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
 }
 
+static inline uint8_t inb(uint16_t port) {
+    uint8_t ret;
+    __asm__ volatile ("inb %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
+}
+
 void init_pic() {
     outb(0x20, 0x11);
     outb(0xA0, 0x11);
@@ -149,7 +155,7 @@ void init_pic() {
     outb(0xA1, 0x02);
     outb(0x21, 0x01);
     outb(0xA1, 0x01);
-    outb(0x21, 0xFE);
+    outb(0x21, 0xFC);  // Unmask IRQ0 (timer) and IRQ1 (keyboard)
     outb(0xA1, 0xFF);
 }
 
@@ -162,6 +168,38 @@ __attribute__((naked)) void timer_interrupt_stub() {
     __asm__ volatile (
         "pusha\n"
         "call timer_handler\n"
+        "popa\n"
+        "iret\n"
+    );
+}
+
+// Scan code to ASCII lookup table (US QWERTY, unshifted, key-press only)
+const char scancode_to_ascii[128] = {
+    0, 27, '1','2','3','4','5','6','7','8','9','0','-','=','\b',
+    '\t','q','w','e','r','t','y','u','i','o','p','[',']','\n',
+    0, 'a','s','d','f','g','h','j','k','l',';','\'','`',
+    0, '\\', 'z','x','c','v','b','n','m',',','.','/', 0,
+    '*', 0, ' ', 0
+};
+
+void keyboard_handler() {
+    uint8_t scancode = inb(0x60);
+
+    // Only handle key-press (bit 7 = 0), ignore key-release
+    if (!(scancode & 0x80)) {
+        char c = scancode_to_ascii[scancode];
+        if (c != 0) {
+            print_char(c);
+        }
+    }
+
+    outb(0x20, 0x20);
+}
+
+__attribute__((naked)) void keyboard_interrupt_stub() {
+    __asm__ volatile (
+        "pusha\n"
+        "call keyboard_handler\n"
         "popa\n"
         "iret\n"
     );
@@ -187,6 +225,7 @@ void init_idt() {
     }
 
     set_idt_entry(32, (uint32_t)timer_interrupt_stub);
+    set_idt_entry(33, (uint32_t)keyboard_interrupt_stub);
 
     __asm__ volatile ("lidt (%0)" : : "r" (&idt_ptr_val));
 }
@@ -194,6 +233,7 @@ void init_idt() {
 void main() {
     clear_screen();
     print_string("EOS kernel running in 32-bit protected mode\n");
+    print_string("Type something:\n");
 
     init_gdt();
     init_idt();
@@ -201,16 +241,7 @@ void main() {
 
     __asm__ volatile ("sti");
 
-    uint32_t last_ticks = 0xFFFFFFFF;
-
     while (1) {
-        uint32_t now = timer_ticks;
-        if (now != last_ticks) {
-            last_ticks = now;
-            set_cursor(0, 2);
-            print_string("Timer ticks: ");
-            print_number(now);
-            print_string("  ");
-        }
+        
     }
 }
