@@ -214,6 +214,7 @@ const char scancode_to_ascii_shift[128] = {
 };
 
 volatile int shift_pressed = 0;
+volatile int caps_lock_on = 0;
 
 // Command buffer for the shell
 char command_buffer[128];
@@ -244,15 +245,72 @@ void run_command() {
     }
 }
 
+// Convert a numpad scancode (0x47-0x53) to its character.
+// This assumes Num Lock is on (digits mode, not arrow/navigation mode).
+char numpad_to_ascii(uint8_t scancode) {
+    switch (scancode) {
+        case 0x47: return '7';
+        case 0x48: return '8';
+        case 0x49: return '9';
+        case 0x4A: return '-';
+        case 0x4B: return '4';
+        case 0x4C: return '5';
+        case 0x4D: return '6';
+        case 0x4E: return '+';
+        case 0x4F: return '1';
+        case 0x50: return '2';
+        case 0x51: return '3';
+        case 0x52: return '0';
+        case 0x53: return '.';
+        default: return 0;
+    }
+}
+
+int is_letter(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+
+char apply_caps_lock(char c) {
+    if (!is_letter(c)) {
+        return c;
+    }
+    if (c >= 'a' && c <= 'z') {
+        return (char)(c - 'a' + 'A');
+    }
+    return (char)(c - 'A' + 'a');
+}
+
 void keyboard_handler() {
     uint8_t scancode = inb(0x60);
 
     if (scancode == 0x2A || scancode == 0x36) {
         shift_pressed = 1;
-    } else if (scancode == 0xAA || scancode == 0xB6) {
+        outb(0x20, 0x20);
+        return;
+    }
+    if (scancode == 0xAA || scancode == 0xB6) {
         shift_pressed = 0;
-    } else if (!(scancode & 0x80)) {
-        char c = shift_pressed ? scancode_to_ascii_shift[scancode] : scancode_to_ascii[scancode];
+        outb(0x20, 0x20);
+        return;
+    }
+    if (scancode == 0x3A) {
+        // Caps Lock is a toggle - only react on key press, not release
+        caps_lock_on = !caps_lock_on;
+        outb(0x20, 0x20);
+        return;
+    }
+
+    if (!(scancode & 0x80)) {
+        char c;
+
+        if (scancode >= 0x47 && scancode <= 0x53) {
+            c = numpad_to_ascii(scancode);
+        } else {
+            c = shift_pressed ? scancode_to_ascii_shift[scancode] : scancode_to_ascii[scancode];
+            if (caps_lock_on) {
+                c = apply_caps_lock(c);
+            }
+        }
 
         if (c == '\n') {
             print_char('\n');
