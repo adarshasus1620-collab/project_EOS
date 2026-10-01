@@ -137,6 +137,61 @@ int str_starts_with(const char *str, const char *prefix) {
     return 1;
 }
 
+// ---- Memory management ----
+// We manage memory in 4KB blocks, starting right after our kernel
+// (which sits at 0x8000). We assume 16MB of usable RAM for now.
+// A bitmap tracks which blocks are free (0) or used (1).
+
+#define BLOCK_SIZE 4096
+#define MEMORY_START 0x100000   // start managing memory from 1MB onward (safe, well past our kernel and BIOS areas)
+#define MEMORY_SIZE  (16 * 1024 * 1024 - MEMORY_START)
+#define TOTAL_BLOCKS (MEMORY_SIZE / BLOCK_SIZE)
+
+uint8_t memory_bitmap[(TOTAL_BLOCKS / 8) + 1];
+uint32_t used_blocks = 0;
+
+void set_block_used(uint32_t block) {
+    memory_bitmap[block / 8] |= (1 << (block % 8));
+}
+
+void set_block_free(uint32_t block) {
+    memory_bitmap[block / 8] &= ~(1 << (block % 8));
+}
+
+int is_block_used(uint32_t block) {
+    return (memory_bitmap[block / 8] & (1 << (block % 8))) != 0;
+}
+
+void init_memory() {
+    for (uint32_t i = 0; i < (TOTAL_BLOCKS / 8) + 1; i++) {
+        memory_bitmap[i] = 0;
+    }
+    used_blocks = 0;
+}
+
+// Returns the physical address of a free block, or 0 if none available.
+uint32_t alloc_block() {
+    for (uint32_t i = 0; i < TOTAL_BLOCKS; i++) {
+        if (!is_block_used(i)) {
+            set_block_used(i);
+            used_blocks++;
+            return MEMORY_START + (i * BLOCK_SIZE);
+        }
+    }
+    return 0;
+}
+
+void free_block(uint32_t address) {
+    if (address < MEMORY_START) {
+        return;
+    }
+    uint32_t block = (address - MEMORY_START) / BLOCK_SIZE;
+    if (block < TOTAL_BLOCKS && is_block_used(block)) {
+        set_block_free(block);
+        used_blocks--;
+    }
+}
+
 void init_gdt() {
     gdt[0].limit_low = 0;
     gdt[0].base_low = 0;
@@ -253,12 +308,13 @@ void run_command() {
 
     if (str_equals(command_buffer, "help")) {
         print_string("Available commands:\n");
-        print_string("  help   - show this list\n");
-        print_string("  clear  - clear the screen\n");
-        print_string("  ticks  - show timer tick count\n");
-        print_string("  about  - show info about EOS\n");
-        print_string("  echo   - print back text, e.g. echo hello\n");
-        print_string("  reboot - restart the system\n");
+        print_string("  help    - show this list\n");
+        print_string("  clear   - clear the screen\n");
+        print_string("  ticks   - show timer tick count\n");
+        print_string("  about   - show info about EOS\n");
+        print_string("  echo    - print back text, e.g. echo hello\n");
+        print_string("  meminfo - show memory usage\n");
+        print_string("  reboot  - restart the system\n");
     } else if (str_equals(command_buffer, "clear")) {
         clear_screen();
     } else if (str_equals(command_buffer, "ticks")) {
@@ -269,6 +325,16 @@ void run_command() {
         print_string("EOS - a custom operating system, built from scratch\n");
     } else if (str_starts_with(command_buffer, "echo ")) {
         print_string(command_buffer + 5);
+        print_char('\n');
+    } else if (str_equals(command_buffer, "meminfo")) {
+        print_string("Total blocks: ");
+        print_number(TOTAL_BLOCKS);
+        print_char('\n');
+        print_string("Used blocks:  ");
+        print_number(used_blocks);
+        print_char('\n');
+        print_string("Free blocks:  ");
+        print_number(TOTAL_BLOCKS - used_blocks);
         print_char('\n');
     } else if (str_equals(command_buffer, "reboot")) {
         print_string("Rebooting...\n");
@@ -409,6 +475,7 @@ void main() {
     init_gdt();
     init_idt();
     init_pic();
+    init_memory();
 
     __asm__ volatile ("sti");
 
