@@ -125,6 +125,18 @@ int str_equals(const char *a, const char *b) {
     return a[i] == '\0' && b[i] == '\0';
 }
 
+// Checks if 'str' starts with 'prefix'. Returns 1 if yes, 0 if no.
+int str_starts_with(const char *str, const char *prefix) {
+    int i = 0;
+    while (prefix[i] != '\0') {
+        if (str[i] != prefix[i]) {
+            return 0;
+        }
+        i++;
+    }
+    return 1;
+}
+
 void init_gdt() {
     gdt[0].limit_low = 0;
     gdt[0].base_low = 0;
@@ -220,6 +232,18 @@ volatile int caps_lock_on = 0;
 char command_buffer[128];
 int command_length = 0;
 
+// Reboots the machine via the keyboard controller's pulse-reset line.
+void reboot_system() {
+    uint8_t status;
+    do {
+        status = inb(0x64);
+    } while (status & 0x02);
+    outb(0x64, 0xFE);
+    while (1) {
+        
+    }
+}
+
 void run_command() {
     command_buffer[command_length] = '\0';
 
@@ -229,15 +253,26 @@ void run_command() {
 
     if (str_equals(command_buffer, "help")) {
         print_string("Available commands:\n");
-        print_string("  help  - show this list\n");
-        print_string("  clear - clear the screen\n");
-        print_string("  ticks - show timer tick count\n");
+        print_string("  help   - show this list\n");
+        print_string("  clear  - clear the screen\n");
+        print_string("  ticks  - show timer tick count\n");
+        print_string("  about  - show info about EOS\n");
+        print_string("  echo   - print back text, e.g. echo hello\n");
+        print_string("  reboot - restart the system\n");
     } else if (str_equals(command_buffer, "clear")) {
         clear_screen();
     } else if (str_equals(command_buffer, "ticks")) {
         print_string("Timer ticks: ");
         print_number(timer_ticks);
         print_char('\n');
+    } else if (str_equals(command_buffer, "about")) {
+        print_string("EOS - a custom operating system, built from scratch\n");
+    } else if (str_starts_with(command_buffer, "echo ")) {
+        print_string(command_buffer + 5);
+        print_char('\n');
+    } else if (str_equals(command_buffer, "reboot")) {
+        print_string("Rebooting...\n");
+        reboot_system();
     } else {
         print_string("Unknown command: ");
         print_string(command_buffer);
@@ -294,7 +329,6 @@ void keyboard_handler() {
         return;
     }
     if (scancode == 0x3A) {
-        // Caps Lock is a toggle - only react on key press, not release
         caps_lock_on = !caps_lock_on;
         outb(0x20, 0x20);
         return;
