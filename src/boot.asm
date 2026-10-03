@@ -46,7 +46,7 @@ boot_drive: db 0
 dap:
     db 0x10       ; size of packet
     db 0x00       ; reserved
-    dw 10         ; number of sectors to read
+    dw 20         ; number of sectors to read
     dw 0x8000     ; offset to load into
     dw 0x0000     ; segment to load into
     dq 1          ; starting LBA sector (sector 1, since sector 0 is bootloader)
