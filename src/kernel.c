@@ -149,7 +149,6 @@ int str_equals(const char *a, const char *b)
     return a[i] == '\0' && b[i] == '\0';
 }
 
-// Checks if 'str' starts with 'prefix'. Returns 1 if yes, 0 if no.
 int str_starts_with(const char *str, const char *prefix)
 {
     int i = 0;
@@ -175,13 +174,39 @@ void str_copy(char *dest, const char *src, int max_len)
     dest[i] = '\0';
 }
 
+// ---- Port I/O helpers ----
+
+static inline void outb(uint16_t port, uint8_t val)
+{
+    __asm__ volatile("outb %0, %1" : : "a"(val), "Nd"(port));
+}
+
+static inline uint8_t inb(uint16_t port)
+{
+    uint8_t ret;
+    __asm__ volatile("inb %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
+}
+
+static inline void outw(uint16_t port, uint16_t val)
+{
+    __asm__ volatile("outw %0, %1" : : "a"(val), "Nd"(port));
+}
+
+static inline uint16_t inw(uint16_t port)
+{
+    uint16_t ret;
+    __asm__ volatile("inw %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
+}
+
 // ---- Memory management ----
 // We manage memory in 4KB blocks, starting right after our kernel
 // (which sits at 0x8000). We assume 16MB of usable RAM for now.
 // A bitmap tracks which blocks are free (0) or used (1).
 
 #define BLOCK_SIZE 4096
-#define MEMORY_START 0x100000 // start managing memory from 1MB onward (safe, well past our kernel and BIOS areas)
+#define MEMORY_START 0x100000
 #define MEMORY_SIZE (16 * 1024 * 1024 - MEMORY_START)
 #define TOTAL_BLOCKS (MEMORY_SIZE / BLOCK_SIZE)
 
@@ -212,7 +237,6 @@ void init_memory()
     used_blocks = 0;
 }
 
-// Returns the physical address of a free block, or 0 if none available.
 uint32_t alloc_block()
 {
     for (uint32_t i = 0; i < TOTAL_BLOCKS; i++)
@@ -241,13 +265,84 @@ void free_block(uint32_t address)
     }
 }
 
-// ---- Simple in-memory file system ----
-// NOTE: This is RAM-only for now - files disappear when EOS reboots.
-// Real persistence (saving to disk) is a separate, later step.
+// ---- ATA PIO disk driver (LBA28, master drive) ----
+
+#define ATA_DATA 0x1F0
+#define ATA_ERROR 0x1F1
+#define ATA_SECCOUNT 0x1F2
+#define ATA_LBA_LO 0x1F3
+#define ATA_LBA_MID 0x1F4
+#define ATA_LBA_HI 0x1F5
+#define ATA_DRIVE_HEAD 0x1F6
+#define ATA_STATUS 0x1F7
+#define ATA_COMMAND 0x1F7
+
+void ata_wait_bsy()
+{
+    while (inb(ATA_STATUS) & 0x80)
+    {
+    }
+}
+
+void ata_wait_drq()
+{
+    while (!(inb(ATA_STATUS) & 0x08))
+    {
+    }
+}
+
+void ata_read_sector(uint32_t lba, uint16_t *buffer)
+{
+    ata_wait_bsy();
+    outb(ATA_DRIVE_HEAD, (uint8_t)(0xE0 | ((lba >> 24) & 0x0F)));
+    outb(ATA_SECCOUNT, 1);
+    outb(ATA_LBA_LO, (uint8_t)lba);
+    outb(ATA_LBA_MID, (uint8_t)(lba >> 8));
+    outb(ATA_LBA_HI, (uint8_t)(lba >> 16));
+    outb(ATA_COMMAND, 0x20);
+
+    ata_wait_bsy();
+    ata_wait_drq();
+
+    for (int i = 0; i < 256; i++)
+    {
+        buffer[i] = inw(ATA_DATA);
+    }
+}
+
+void ata_write_sector(uint32_t lba, uint16_t *buffer)
+{
+    ata_wait_bsy();
+    outb(ATA_DRIVE_HEAD, (uint8_t)(0xE0 | ((lba >> 24) & 0x0F)));
+    outb(ATA_SECCOUNT, 1);
+    outb(ATA_LBA_LO, (uint8_t)lba);
+    outb(ATA_LBA_MID, (uint8_t)(lba >> 8));
+    outb(ATA_LBA_HI, (uint8_t)(lba >> 16));
+    outb(ATA_COMMAND, 0x30);
+
+    ata_wait_bsy();
+    ata_wait_drq();
+
+    for (int i = 0; i < 256; i++)
+    {
+        outw(ATA_DATA, buffer[i]);
+    }
+
+    outb(ATA_COMMAND, 0xE7);
+    ata_wait_bsy();
+}
+
+// ---- Simple file system, persisted to disk via the ATA driver ----
+// Each file gets its own dedicated 512-byte sector, laid out as:
+//   byte 0       : used flag
+//   bytes 1-32   : filename
+//   bytes 33-36  : file size (little-endian uint32_t)
+//   bytes 37+    : file data
 
 #define MAX_FILES 16
 #define MAX_FILENAME 32
 #define MAX_FILE_SIZE 256
+#define FS_START_SECTOR 100
 
 struct file_entry
 {
@@ -258,13 +353,65 @@ struct file_entry
 };
 
 struct file_entry files[MAX_FILES];
+uint8_t disk_sector_buffer[512];
+
+void save_file_to_disk(int index)
+{
+    for (int i = 0; i < 512; i++)
+    {
+        disk_sector_buffer[i] = 0;
+    }
+
+    disk_sector_buffer[0] = (uint8_t)files[index].used;
+
+    for (int i = 0; i < MAX_FILENAME; i++)
+    {
+        disk_sector_buffer[1 + i] = (uint8_t)files[index].name[i];
+    }
+
+    uint32_t size = files[index].size;
+    disk_sector_buffer[33] = (uint8_t)(size & 0xFF);
+    disk_sector_buffer[34] = (uint8_t)((size >> 8) & 0xFF);
+    disk_sector_buffer[35] = (uint8_t)((size >> 16) & 0xFF);
+    disk_sector_buffer[36] = (uint8_t)((size >> 24) & 0xFF);
+
+    for (int i = 0; i < MAX_FILE_SIZE; i++)
+    {
+        disk_sector_buffer[37 + i] = (uint8_t)files[index].data[i];
+    }
+
+    ata_write_sector(FS_START_SECTOR + index, (uint16_t *)disk_sector_buffer);
+}
+
+void load_files_from_disk()
+{
+    for (int index = 0; index < MAX_FILES; index++)
+    {
+        ata_read_sector(FS_START_SECTOR + index, (uint16_t *)disk_sector_buffer);
+
+        files[index].used = disk_sector_buffer[0];
+
+        if (files[index].used)
+        {
+            for (int i = 0; i < MAX_FILENAME; i++)
+            {
+                files[index].name[i] = (char)disk_sector_buffer[1 + i];
+            }
+
+            uint32_t size = disk_sector_buffer[33] | ((uint32_t)disk_sector_buffer[34] << 8) | ((uint32_t)disk_sector_buffer[35] << 16) | ((uint32_t)disk_sector_buffer[36] << 24);
+            files[index].size = size;
+
+            for (int i = 0; i < MAX_FILE_SIZE; i++)
+            {
+                files[index].data[i] = (char)disk_sector_buffer[37 + i];
+            }
+        }
+    }
+}
 
 void init_filesystem()
 {
-    for (int i = 0; i < MAX_FILES; i++)
-    {
-        files[i].used = 0;
-    }
+    load_files_from_disk();
 }
 
 int find_file(const char *name)
@@ -279,8 +426,6 @@ int find_file(const char *name)
     return -1;
 }
 
-// Creates the file if it doesn't exist, or returns the existing one.
-// Returns the file index, or -1 if the file table is full.
 int get_or_create_file(const char *name)
 {
     int idx = find_file(name);
@@ -316,6 +461,8 @@ void write_file(const char *name, const char *content)
         len++;
     }
     files[idx].size = len;
+
+    save_file_to_disk(idx);
 }
 
 void read_file(const char *name)
@@ -386,18 +533,6 @@ void set_idt_entry(int n, uint32_t handler)
     idt[n].offset_high = (handler >> 16) & 0xFFFF;
 }
 
-static inline void outb(uint16_t port, uint8_t val)
-{
-    __asm__ volatile("outb %0, %1" : : "a"(val), "Nd"(port));
-}
-
-static inline uint8_t inb(uint16_t port)
-{
-    uint8_t ret;
-    __asm__ volatile("inb %1, %0" : "=a"(ret) : "Nd"(port));
-    return ret;
-}
-
 void init_pic()
 {
     outb(0x20, 0x11);
@@ -445,11 +580,9 @@ const char scancode_to_ascii_shift[128] = {
 volatile int shift_pressed = 0;
 volatile int caps_lock_on = 0;
 
-// Command buffer for the shell
 char command_buffer[128];
 int command_length = 0;
 
-// Reboots the machine via the keyboard controller's pulse-reset line.
 void reboot_system()
 {
     uint8_t status;
@@ -463,8 +596,6 @@ void reboot_system()
     }
 }
 
-// Splits "write filename rest of text" into filename and content.
-// Returns 1 on success, 0 if the format is wrong (no filename given).
 int parse_write_command(const char *args, char *filename_out, char *content_out)
 {
     int i = 0;
@@ -581,8 +712,6 @@ void run_command()
     }
 }
 
-// Convert a numpad scancode (0x47-0x53) to its character.
-// This assumes Num Lock is on (digits mode, not arrow/navigation mode).
 char numpad_to_ascii(uint8_t scancode)
 {
     switch (scancode)
@@ -711,7 +840,6 @@ __attribute__((naked)) void keyboard_interrupt_stub()
         "iret\n");
 }
 
-// Default handler for any interrupt we don't specifically handle
 __attribute__((naked)) void default_interrupt_stub()
 {
     __asm__ volatile(
